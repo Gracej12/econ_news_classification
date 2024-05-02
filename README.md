@@ -9,3 +9,4 @@ Using a fine-tuned RoBERTA to classify thousands of articles pertaining to the e
 - data_collection.ipynb: collects urls and unlabeled article content for articles pertaining to the broader economy
 - classifyinge_econ_news.ipynb: script for fine-tuning RoBERTA model using articles collected in data_collection_gold_standard.ipynb
 - fine_project.Rmd: script for building final project paper and visualizations
+- fine_tuning.ipynb: script for quickly classifying new articles using saved pretrained model
