@@ -1,0 +1,426 @@
+---
+title: "Evaluating the Prevalence of Certain Economic Indicators in Media"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-05-01"
+author: "Grace Jensen"
+header-includes:
+  - \usepackage{graphicx}
+---
+
+# Evaluating Partisan Differences in Economic Policy Priorities
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse) # loads dplyr, ggplot2, and others
+library(stringr) # to handle text elements
+library(tidytext) # includes set of functions useful for manipulating text
+library(text2vec) # for word embedding implementation
+library(widyr) # for reshaping the text data
+library(irlba) # for svd
+library(here)
+library(quanteda)
+library(caret)
+library(glmnet)
+library(stringr)
+library(ggrepel)
+library(stm)
+library(quanteda.textmodels)
+library(quanteda)
+library(stringr)
+
+library(gt)
+library(gtExtras)
+library(patchwork)
+
+setwd("~/ppol6801/final_project_github")
+```
+
+```{r, include=FALSE}
+# defining fucntions
+# reformat date
+format_date <- function(date) {
+  ifelse(grepl("^\\w+, \\d{2} \\w{3} \\d{4} \\d{2}:\\d{2}:\\d{2} GMT$", date),
+         format(as.Date(date, format="%a, %d %b %Y %H:%M:%S GMT"), "%m-%Y"),
+         format(as.Date(date), "%m-%Y"))
+}
+
+```
+
+
+## Introduction
+
+As we approach the inevitable rematch between president Biden and former president Trump in the 2024 election, many voters are debating if they are better off now than they were 4 years ago. As a whole, the general public is unclear, with 49% of registered voters favoring Trump and 48% leaning towards Biden (Pew Research, 2024). There are several key issues each campaign has highlighted from reproductive rights to global affairs to even ideas as broad as the ‘fate of democracy’ (Rubin, 2024). However, for this research study, I will focus on the president’s handling of the economy, which according to recent polling has been a big factor for voters leading up to the election.
+
+The Biden team has attempted to make the argument that his policies these past four years has resulted in a thriving economy, but how well is it really doing? From a third party perspective, it can be hard to tell- seeing as by all common indicators of economic health, the economy is doing great! In the past few years, we have seen record high GDP growth and record low unemployment rates, the likes of which we have not seen since the 1960s. The Biden administration has touted its economic policies as a massive success- publishing reports stating that “Bidenomics Is Working”, exemplified by a job boom that has added more than 13 million jobs as well as post-pandemic growth that far outpaces the other world leading economies (white House, 2023). However, the average person is likely to tell you a completely different story about just how well the economy is doing in actuality. According to a recent research survey conducted by Pew Research, 72% of Americans do not have a positive view of the economy, citing high inflation, high cost of living, lack of good paying jobs, and national debt as the reasoning behind their negative sentiments. This discrepancy between government and citizen sentiments in terms of the economy has led me to question whether the normal indicators of economic health are not what the average person talks and/or cares about- and therefore if economists and policymakers should adjust the amount of weight they place on each individual indicator when analyzing our economic state.
+
+To analyze which economic metrics US citizens tend to focus on, I will classify hundreds of articles pertaining to the economy as focusing on one of the main economic indicators, namely: GDP, inflation, employment/wages, housing costs, GDP, stock market, national debt. Using a fine-tuned RoBerta model that was trained on hundreds of articles pertaining to each economic metric, I will classify thousands of unlabeled articles simply pertaining to the economy from 2016 to present day. I will then evaluate how the relevance of each metric varies across time and source- specifically looking at if certain media sources focus on certain indicators of economic health more than others and if that focus varies across different presidential nominations. This will hopefully answer the question of whether partisan biases affect people’s perception of the government and/or which factors the presidential candidates should focus on to attract potential new voters leading up to the 2024 election.
+
+Using a fine-tuned RoBERTA to classify thousands of articles pertaining to the economy from 2016 to 2014, I was able to find that there do seem to be partisan differences between which topics media sources tend to focus on. Specifically, sources who have been deemed as centrist or left leaning, tend to discuss metrics like GDP more than their right-leaning counterparts who's focus is more evenly distributed. Additionally, I found subtle differences between which topics government sources and typical media sources prioritize- possibly alluding to differing narrative agendas between these different sources when it comes to discussion on the economy.
+
+## Data and Methods
+
+To collect both the data set for analysis and the gold standard data set–or the articles pertaining to each of my economic indicators of focus– I used the GNews package and API. This API allows the user to search for certain keywords across a period of time, collecting 100 urls per call. I first initialized my GNews() call to only look for articles from the United States written in English. In the data_collection_gold_standard.ipynb file, I have created 3 main functions: extract_article_newspaper(), append_to_csv(), and pull_data() which I will go into more detail below:
+
+The pull_data() is the main function for pulling key metadata from the web for each keyword- namely URL and publisher. It (1) calls the API using the user given keyword and date range, (2) converts the extracted json file into a dataframe, (3) preprocesses the publisher variable, (4) sets the label column equal to the given keyword, (5) applied the extract_article_newspaper() function to the URLs, and (6) uses the append_to_csv() function to append any new results to any pre-existing csv file. 
+
+Going into more detail about the extract_article_newspaper() function, it uses the requests package to download the content from the URLs webpage if the status code is equal to 200. If the response has not succeeded or the request has taken longer than 15 seconds, it will result in an error and return an na value for the new extracted_content column. 
+
+The append_to_csv() function takes the new data set and the path to any existing file and concatenates any new rows. Any duplicated rows will be dropped so as to not introduce any potential bias to our dataset. It will then save the new data set with all properly appended rows to the same path given for the existing file, thus overwriting the previous econ_news.csv data set. 
+
+### Gold standard data
+In order to collect labeled documents, I iterated through the data collection functions using different key words, namely inflation, employment/wages, housing, GDP, stock market, and national debt- saving the keyword used in the given call as the 'label' value. I then set my start date to January 1, 2016 and my end date to April 25, 2024 so that I was collecting data from both presidential terms. I was able to retrieve 865 unique articles for my gold standard data set which could be used to train my RoBERTa model. I provided a sample to help clarify which information is included in the data set:
+
+```{r, include = FALSE}
+# read in gold standard
+
+gold_standard = read_csv('data/labeled_articles.csv')
+gold_standard
+
+# remove na values
+colSums(is.na(gold_standard))
+gold_standard <- na.omit(gold_standard)
+
+# reformat date
+gold_standard$date <- sapply(gold_standard$`published date`, format_date)
+gold_standard$year <- substr(gold_standard$date, start = 4, stop = 7)
+
+columns_to_truncate <- c("title", "description", "extracted_content")
+gold_standard_table <- gold_standard %>%
+  select(title, description, date, source, extracted_content, label) %>%
+  mutate(across(all_of(columns_to_truncate), str_sub, 1, 20))
+
+```
+
+```{r table1, echo=FALSE}
+head(gold_standard_table, 5) %>%
+  gt() %>%
+  gt_theme_nytimes() %>%
+  tab_header(title = "Gold Standard Dataset") %>%
+  tab_options(table.width = "90%")
+```
+
+Furthermore, evaluating the different labels, you can see that there is a pretty even distribution across the gold standard dataset, with most economic metrics having around 150-175 documents associated with them. However, you can see that both employment/wages and the stock market have less documents- which could be due to the two-word naming convention which makes the keyword less broad relatively speaking.
+
+```{r fig1,  echo=FALSE}
+topic_distr <- ggplot(gold_standard, aes(x=label))+
+  geom_bar(fill = c("#fa643f", "#005a8d", "#ffcc00", "#00cc00", "#ff0000", "#6600cc")) +
+  #scale_fill_manual(values = c("#fa643f", "#005a8d", "#ffcc00", "#00cc00", "#ff0000", "#6600cc")) +
+  labs(x = "Label",
+       y = "Frequency")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme_minimal() +
+  ggtitle("Frequency of Labels Across the Gold Standard") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+topic_distr
+```
+
+In terms of the classification process, I plotted the words most closely associated with each of these labels, or economic metrics, by creating a structural topic model object from a document feature matrix of the extracted content. The results from this analysis help validate my gold standard classifications, seeing as clear patterns are present in the groups. For example, out of documents classified as topic 5, a large proportion of them include the words inflation, price, and rates- which logically is associated with the inflation economic metric. While topic 4 has to do with the stock market, topic 6 housing, etc.
+
+```{r fig2, include = FALSE}
+# visualize most common words for each label
+# Preprocess the text data
+
+# Create document ID column
+gold_standard$document_id <- 1:nrow(gold_standard)
+
+processed_texts <- textProcessor(gold_standard$title_extracted_content)
+
+processed_texts$meta$document_id <- gold_standard$document_id
+
+# Create document-feature matrix (DFM)
+dfm_stm <- prepDocuments(processed_texts$documents, processed_texts$vocab, meta = processed_texts$meta)
+
+# Create Structural Topic Model (STM) object
+stm_model <- stm(documents = dfm_stm$documents,
+                 vocab = dfm_stm$vocab,
+                 data = list(documents = dfm_stm$meta$document_id, labels = gold_standard$label),
+                 K = 6,  # Number of topics
+                 init.type = "Spectral") 
+```
+
+```{r, echo=FALSE}
+labelTopics(stm_model)
+
+gold_stand_word_plot <- plot(stm_model)
+ggsave("output/gold_stand_word_plot.png", plot = gold_stand_word_plot)
+```
+
+### Unlabeled dataset
+This data collection process was repeated for the unlabeled articles, with the only difference being the keyword and label setting. Instead of iterating through each specific metric, I simply searched articles pertaining to ‘economy’, ‘finance’, ‘financial’, ‘trump economy’, and ‘biden economy’. I hoped that with more broad terms we could get articles about a wide range of topics. I also iterated through each year, ranging from 2016-2024 to make sure I was pulling as much data as possible with each call. Additionally, in order to make sure I had a good number of articles to analyze later, any article that was not able to be scraped–i.e. unsuccessful request–the extracted_content was replaced with a combination of the title and description variables. While this is not optimal compared to the actual full article, I do believe the crux of the article can be derived from these variables- especially seeing as the Roberta model is not able to handle most full articles (it has a maximum length of 512 tokens). As a result of this data collection process, I was able to pull 4124 unique articles. 
+
+Furthermore, after some initial analysis, I discovered that a good number of my articles were actually from government sources, which would provide an interesting comparison later in my analysis when evaluating which topics the government tends to focus on versus what the general public is largely focusing on. To account for this, I created a new binary column called govt_release which would be equal to 1 if the source had any of the following keywords present within its name:
+"gov", "govt", "government", "agency", "service", "office", "department", "bureau", "white house", "administration","nasa","treasury","oecd","homeland security","national endowment for the arts", "city of", "congress","federal reserve bank","comptroller","fund"
+
+A sample of the economic news dataset can be found below:
+
+```{r, include=FALSE}
+# load the data
+df <- read_csv('data/classified_econ_news.csv')
+
+# remove the unecessary columns
+df<- df[, -(2)]
+df<- df[, -(7:12)]
+
+df$date <- sapply(df$`published date`, format_date)
+df$year <- substr(df$date, start = 4, stop = 7)
+
+df_edit <- df %>%
+  mutate(
+      name = gsub("\\s*\\(.*?\\)|\\.com$|\\.net$|\\.org$", "", source) %>%
+        tolower() %>% 
+        gsub("\\b(?:the|news|opinion|editorial|magazine|business)\\b", "", ., ignore.case = TRUE) %>%
+        gsub("\\s+", " ", .) %>%
+        gsub("^\\s+", "", .)
+    )
+
+# making a new government column that is 1 if its a govt publication 
+keywords <- c("gov", "govt", "government", "agency", "service", "office", "department", "bureau", "white house", "administration","nasa","treasury","oecd","homeland security","national endowment for the arts", "city of", "congress","federal reserve bank","comptroller","fund")
+
+# Create a new binary column indicating presence of keywords
+df_edit<- df_edit %>%
+  mutate(govt_release = ifelse(grepl(paste(keywords, collapse = "|"), name), 1, 0))
+
+head(df_edit)
+
+columns_to_truncate <- c("title", "description")
+df_table <- df_edit %>%
+  select(title, description, date, name, govt_release) %>%
+  mutate(across(all_of(columns_to_truncate), str_sub, 1, 20))
+
+```
+
+```{r table2, echo=FALSE}
+sample_n(df_table, 5) %>%
+  gt() %>%
+  gt_theme_nytimes() %>%
+  tab_header(title = " Economic Data") %>%
+  tab_options(table.width = "90%")
+```
+
+### Allsides data
+
+Furthermore, to analyze the potential role of partisan ideologies in the prevalence of certain topics, I utilized the allsides dataset which assigns each major news source a bias ranging from left, left center, center, right center, and right. After performing some preprocessing on the source columns in both the economic news and allsides dataset- including removing all instances of '.com' or 'news', etc.- I merged on shared values to create the final dataset. If there was no bias information available for an article I selected, I decided to classify it as "center" meaning "neutral". The overall distribution of biases amongst my articles over time can be seen below:
+
+```{r, include=FALSE}
+# load in allsides dataset
+allsides <- read_csv('data/allsides.csv')
+
+#filter to relevant columns
+allsides <- allsides %>%
+  select(name, bias)
+
+# preprocess allsides
+allside_edit <- allsides %>%
+  mutate(
+      name = gsub("\\s*\\(.*?\\)|\\.com$|\\.net$|\\.org$", "", name) %>%
+        tolower() %>%
+        gsub("\\b(?:the|news|opinion|editorial|magazine|business)\\b", "", ., ignore.case = TRUE) %>%
+        gsub("\\s+", " ", .) %>%
+        gsub("^\\s+", "", .)
+    )
+
+# Keep only the first occurrence of each unique name
+allside_edit <- allside_edit[!duplicated(allside_edit$name), ]
+
+```
+
+```{r, include=FALSE}
+# merge the df and allsides
+
+#df_wbias <- merge(cleaned_df, cleaned_allsides, by.x='source',by.y='name')
+#df_wbias <- merge(df_edit, allside_edit, by.x='source',by.y='name')
+df_wbias <- left_join(df_edit, allside_edit, by = 'name')
+
+# if it doesnt merge with allsides name- make the bias center/nuetral
+df_wbias <- df_wbias %>%
+    mutate(bias = ifelse(is.na(bias), "center", bias))
+#merged_df <- left_join(df_edit, allside_edit, by = NULL, copy = TRUE)
+```
+
+```{r, echo=FALSE}
+df_bias_summary <- df_wbias %>%
+  group_by(year, bias) %>%
+  summarise(frequency = n()) %>%
+  ungroup()
+
+# mapping out
+plot4 <- ggplot(df_bias_summary, aes(x = factor(year), y = frequency, fill = bias)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Number of articles per ideology",
+       x = "Year",
+       y = "Frequency") +
+  scale_fill_manual(values = c("#fa643f", "#005a8d", "#ffcc00", "#00cc00", "#ff0000", "#6600cc")) +
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position = "bottom")
+
+plot4
+```
+Likely in part due to my decision to make all unmatched documents marked as center, this bias makes up the majority of my data set. Also, most of my documents with a right/right-center bias comes from 2024, which is likely due to web scraping restrictions on some of these websites. These factors will need to be taken into consideration in my future analysis
+
+## Analysis
+
+###Training RoBerta with Gold Standard Data
+
+Now that I have a significant number of gold standard articles across each of my topics, I decided to use these labeled documents to fine-tune a large language learning model. LLMs have powerful and highly accurate text classification abilities thanks to the massive amount of text used in pre-training and the dynamic word embedding approach. Furthermore, for the purposes of this study, these models allow researchers to further train the model with new text data in order to suit specific tasks- which in this example is classifying economic articles as 1 of 6 different economic metrics. I ultimately decided to train a RoBERTA model compared to other LLM models like BERT and DeBERTA thanks to its balance between performance and computational cost as dispalyed in Timoneda and Vera's 2024 research study.
+
+In order to train the model for my research specifications, I first loaded the pretrained roberta base model and tokenized each of the documents in the gold standard dataset. In order to cut down on computation cost, I set the max length of the text to input to 250 despite the fact that a majority of my articles hovered around 780 words. However, RoBERTA models can do a lot with a little, and cutting down on the number of words did very little to effect the models overall accuracy. From there, I extracted the labels and converted the tokens into a tensor matrix which will be fed into the model. I then created a PyTorch TensorDataset which combines the IDs, attention masks, and labels into an object that can be used for training and validation. For model parameters, I set the learning rate to 2e-5, epochs to 3, and batch size to 4 which are each common parameters used in the natural language processing field.
+
+```{r, include=FALSE}
+# manually inserting the fold stats from classifying_econ_news.ipynb to show in table
+LLM_performance <- data.frame(
+  performance_metric = c("overall mean", "overall mean sd", "overall mean f1", "overall recall", "overall precision", "f1 GDP", "f1 employment", "f1 housing", "f1 inflation", "f1 national debt", "f1 stock market"),
+  score = c(0.964, 0.009, 0.964, 0.964, 0.965, 0.982, 1.0, 0.976, 0.95, 0.983, 0.958)
+)
+
+```
+
+```{r, echo=FALSE}
+LLM_performance %>%
+  gt() %>%
+  gt_theme_nytimes() %>%
+  tab_header(title = "RoBERTa Performance Scores") %>%
+  tab_options(table.width = "50%")
+```
+
+Using a 3 fold cross validation, I was able to achieve a 97% accuracy rate overall with only a 0.009 standard deviation. Looking at the models ability to accurately predict each of the different labels- it was consistently able to properly categorize each document with over 95% accuracy. Knowing these metrics, I can feel comfortable knowing my model will be able to accurately categorize future data. 
+
+###Classifying Novel Documents
+
+In order to use this fine-tuned model to predict the main focus of the unlabeled economic news articles, I had to first define a dictionary that maps the numeric labels to their categories (ie 3: inflation) to make later analysis more interpretable. I then used the novel predict() function to iterate through each of the documents, encode them using a tokenizer, feed it to the previously pre-trained model, and finally predict the label based on the model's output probabilities. I applied the same preprocessing to the new documents as I did with the gold standard data set, specifically by setting the maximum length ot 250 words.
+
+## Results
+
+```{r, include=FALSE}
+# evaluate the distribution of predicted labels 
+plot1 <- ggplot(df, aes(x=predicted_label))+
+  geom_bar(fill = c("#fa643f", "#005a8d", "#ffcc00", "#00cc00", "#ff0000", "#6600cc")) +
+  #scale_fill_manual(values = c("#fa643f", "#005a8d", "#ffcc00", "#00cc00", "#ff0000", "#6600cc")) +
+  labs(x = "Label",
+       y = "Frequency")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme_minimal() +
+  ggtitle("Frequency of Labels Across the Dataset") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggsave("output/label_distribution.png", plot = plot1)
+
+# distribution of labels across years 
+df_date_summary <- df %>%
+  group_by(year, predicted_label) %>%
+  summarise(frequency = n()) %>%
+  ungroup()
+
+
+plot2 <- ggplot(df_date_summary, aes(x = year, y = frequency, fill = predicted_label)) +
+  geom_area(aes(group = predicted_label), color = "black") +
+  scale_fill_manual(values = c("#fa643f", "#005a8d", "#ffcc00", "#00cc00", "#ff0000", "#6600cc")) +
+  labs(x = "Date (Month-Year)", y = "Frequency", title = "Frequency of Each Label by Date") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme_minimal() +
+  ggtitle("Frequency of Labels Across Years") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position = "bottom")
+
+ggsave("output/label_distribution_year.png", plot = plot2)
+
+```
+```{r, echo=FALSE}
+plot1
+plot2
+```
+
+Quickly evaluating the distribution of the predicted topics, we can see that GDP is consistently the most heavily discussed economic metric, indicating its persistent relevance in discussions about the economy. Following significantly behind are articles concerning national debt, employment/wages, and housing. Across the two presidential administrations, the proportion of labels stays relatively stable, with the exclusion of inflation which saw a significant increase in attention around 2022 and 2023. This aligns with increasingly high inflation that was happening in the post-pandemic United States, which saw consumer prices escalating at historically unseen rates. The pronounced attention to inflation in economic discourse during this time likely reflects public and investor concerns about its potential impact on purchasing power, interest rates, and overall economic stability. Additionally, the overall volume of articles for the year 2024 appears to be lower. However, this decline can be attributed to the smaller time frame rather than a substantive shift in topic distribution.
+
+### Topics and Bias
+
+```{r, include=FALSE}
+#install.packages("waffle", repos = "https://cinc.rud.is")
+library(ggplot2)
+library(waffle)
+
+df_aggregated <- df_wbias %>%
+  group_by(bias, predicted_label) %>%
+  summarise(count = n()) %>%
+  mutate(proportion = count / sum(count))
+
+plot3 <- ggplot(df_aggregated, aes(x = "", y = proportion, fill = predicted_label)) +
+  geom_bar(stat = "identity", width = 1) +
+  geom_text(aes(label = paste0(round(proportion * 100), "%")), 
+            position = position_stack(vjust = 0.5),
+            size = 2, color = "white") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~ bias) +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position = "bottom") #+
+  #labs(title = "Proportion of Predicted Labels by Bias")
+
+ggsave("output/label_distribution_bias.png", plot = plot3)
+```
+
+```{r, echo=FALSE}
+plot3
+```
+
+Looking at the differences in focus between partisan sources, we can see that sources with center, left-center, and left sources tend to disproportionately discuss GDP in their articles about the economy. This would coincide with my previous hypothesis that partisan news sources tend to focus on economic indicators that their president is doing well in. In the current context, this inclination towards highlighting record GDP growth under President Biden's administration may serve to cultivate a more favorable perception of his policies among voters. It is also possible that GDP is a very objective, non-polarized topic that centrist sources can discuss without being necessarily political. 
+
+Interestingly, when evaluating the sources associated with right-center and right politics, they tend to more evenly distribute their focus across each of these economic indicators. Specifically, most of their articles focus on housing, while the other indicators like inflation and national debt each make up around a similar 10-25% of the overall number of articles about the economy. These metrics often serve as key talking points within right-wing discourse, reflecting particular policy concerns and ideological positions. For example, inflation and national debt are recurrent themes in right-wing rhetoric, often framed as indicators of fiscal responsibility and the potential risks associated with expansive government spending and monetary policies. These are also metrics Biden has faltered in during his presidency, seeing as many voters have cited issue with high inflation, so it makes sense that Trump-supporting sources would want to highlight these failings. 
+
+### Topic differences between government press releases and media articles
+```{r, include=FALSE}
+df_aggregated <- df_wbias %>%
+  group_by(govt_release, predicted_label) %>%
+  summarise(count = n()) %>%
+  mutate(proportion = count / sum(count))
+
+pie_chart2 <- ggplot(df_aggregated, aes(x = "", y = proportion, fill = predicted_label)) +
+  geom_bar(stat = "identity", width = 1) +
+  geom_text(aes(label = paste0(round(proportion * 100), "%")), 
+            position = position_stack(vjust = 0.5),
+            size = 3, color = "white") +
+  coord_polar("y", start = 0) +
+  facet_wrap(~ govt_release, labeller = labeller(govt_release = c("0" = "Media Publication", "1" = "Government Press Release"))) +
+  theme_void() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(legend.position = "bottom") #+
+  #labs(title = "Proportion of Predicted Labels by Bias")
+
+
+ggsave("output/topics_govt_media.png", plot = pie_chart2)
+```
+
+```{r, echo=FALSE}
+pie_chart2
+```
+
+Evaluating the difference between which topics government sources tend to focus on in their press releases versus typical media publications, we can see that there are some slight differences. For example, while GDP is the most heavily discussed, 9% more of the government articles discuss GDP compared to media sources. This phenomenon may be attributed to the inherent nature of government communication strategies, which often prioritize highlighting economic achievements and policy successes to bolster public perception and support. Conversely, media outlets, which are largely driven by journalistic norms and audience interests, may opt to cover a broader spectrum of economic topics, including discussions on employment and wages, which hold greater relevance and resonance for their readership. These differences underscore the different agendas and communication priorities inherent in governmental versus media discourse surrounding economic health.
+
+## Discussion
+
+In summary, my analysis revealed distinct variations in the economic factors prioritized across different sources, shedding light on potential underlying reasons for differing viewpoints regarding the state of our economy. Leveraging a finely-tuned Language Model, I developed a robust text classification system capable of accurately categorizing thousands of articles according to key economic indicators. This comprehensive approach facilitated the identification of nuanced differences in metadata, offering valuable insights into prevailing perceptions and narratives surrounding our economic landscape.
+
+Going forward, there are several avenues for further explorations with this research project. First, it is always good to continue scraping and classifying articles in order to amass a larger volume of data for my analysis. This will not only further improve the accuracy of teh RoBERTA model but also decrease any potential bias in the data used in the results section. 
+
+Additionally, the project would benefit from the integration of sentiment analysis techniques. While I do believe document classification provides valuable insights, a deeper understanding of the sentiment surrounding these economic metrics would add a lot of valuable insight into our analysis. By discerning whether outlets and certain biases discuss these metrics positively or negatively, sentiment analysis can offer nuanced interpretations of their coverage. For example, exploring the unexpected emphasis on national debt in left-leaning sources may reveal whether it is portrayed positively or negatively, highlighting the need for sentiment analysis to uncover underlying narratives.
+
+Furthermore, to capture broader public sentiment torwards these economic metrics, it would be useful to collect social media data from platforms like Twitter and Facebook. However, this endeavor may require additional resources and funding to execute effectively. By pursuing these next steps, this project can advance our understanding of economic discourse dynamics, contribute to more informed decision-making, and offer valuable insights into public perceptions of economic indicators.
+
+## References 
+
+Nadeem, R. (2024, April 24). In tight presidential race, voters are broadly critical of both Biden and Trump. Pew Research Center. https://www.pewresearch.org/politics/2024/04/24/in-tight-presidential-race-voters-are-broadly-critical-of-both-biden-and-trump/ 
+
+Rubin, A. (2024, March 16). How trump and Biden’s 2024 rematch differs from 2020 election. Axios. https://www.axios.com/2024/03/16/trump-biden-2024-presidential-election 
+
+The United States Government. (2024, January 2). Bidenomics is working: The president’s plan grows the economy from the middle out and bottom up-not the top down. The White House. https://www.whitehouse.gov/briefing-room/statements-releases/2023/06/28/bidenomics-is-working-the-presidents-plan-grows-the-economy-from-the-middle-out-and-bottom-up-not-the-top-down/ 
+
+Timoneda, Joan C., and Sebastián Vallejo Vera. "BERT, RoBERTa or DeBERTa? Comparing Performance Across Transformers Models in Political Science Text."
+
+
+
+
