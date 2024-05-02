@@ -1,4 +1,4 @@
-# econ_news_classification
+# Economic News Classification Project
 
 This repository hosts all materials that are used in the "Evaluating the Prevalence of Certain Economic Indicators in Media" project for the Text as Data course assignment.
 
